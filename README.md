@@ -11,6 +11,8 @@ This is a simple stock trading bot implemented in Python. The bot uses historica
 - yfinance
 - pandas
 - numpy
+- requests
+- python-dotenv
 ## Installation
 1. Clone the repository:
    ```bash
