@@ -207,7 +207,9 @@ class IntradayTradingBot:
     MARKET_OPEN = dt_time(9, 0)
     MORNING_END = dt_time(10, 30)  # Ideal buying window
     AFTERNOON_START = dt_time(14, 30)  # Ideal selling window
-    MARKET_CLOSE = dt_time(16, 15)
+    MARKET_CLOSE = dt_time(16, 00)
+
+    HOLD_AFTER_TIME = dt_time(15, 40)  # Time to consider taking profit
 
     # Minimum capital requirement (5 million IDR)
     MIN_CAPITAL = 5_000_000
@@ -491,9 +493,9 @@ class IntradayTradingBot:
 
         elif phase == "AFTERNOON_SESSION":
             # Afternoon: Focus on selling/taking profit
-            if score >= 3:
+            if score >= 3 and self.current_time < self.HOLD_AFTER_TIME:
                 return "HOLD", "🟡", "Hold for higher target"
-            elif score >= 0:
+            elif score >= 0 and self.current_time >= self.HOLD_AFTER_TIME:
                 return "TAKE PROFIT", "🟢", "Sell at profit"
             else:
                 return "SELL NOW", "🔴", "Exit position - Weakness"
