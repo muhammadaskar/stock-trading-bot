@@ -1,16 +1,189 @@
+import os
 import yfinance as yf
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, time as dt_time
 import warnings
 import time
+import requests
+from typing import List, Dict
+import sys
+from dotenv import load_dotenv
 
 warnings.filterwarnings('ignore')
+
+load_dotenv()
+
+def get_required_env(name: str) -> str:
+    """Return environment variable or exit with error (no fallback)."""
+    val = os.getenv(name)
+    if val is None or not val.strip():
+        sys.exit(f"Environment variable {name} is required but not set")
+    return val
+
+class TelegramNotifier:
+    """Handle Telegram notifications for multiple chats"""
+
+    def __init__(self, bot_token: str, chat_ids: list):
+        """
+        Initialize Telegram notifier for multiple chats
+
+        Args:
+            bot_token: Bot token dari @BotFather
+            chat_ids: List of Chat IDs [personal, group1, group2]
+        """
+        self.bot_token = bot_token
+        # Filter out empty chat IDs
+        self.chat_ids = [chat_id for chat_id in chat_ids if chat_id and str(chat_id).strip()]
+        self.base_url = f"https://api.telegram.org/bot{bot_token}"
+
+        print(f"✅ Telegram configured for {len(self.chat_ids)} chats: {self.chat_ids}")
+
+    def send_message(self, text: str, parse_mode: str = "HTML") -> bool:
+        """Send message to all registered chats"""
+        if not self.chat_ids:
+            print("⚠️  No valid chat IDs configured")
+            return False
+
+        success_count = 0
+        for chat_id in self.chat_ids:
+            try:
+                # Skip empty chat IDs
+                if not chat_id or not str(chat_id).strip():
+                    continue
+
+                url = f"{self.base_url}/sendMessage"
+                payload = {
+                    "chat_id": chat_id,
+                    "text": text,
+                    "parse_mode": parse_mode
+                }
+                response = requests.post(url, json=payload, timeout=10)
+                if response.status_code == 200:
+                    success_count += 1
+                    print(f"✅ Message sent to {chat_id}")
+                else:
+                    error_msg = response.json().get('description', 'Unknown error')
+                    print(f"❌ Failed to send to {chat_id}: {error_msg}")
+            except Exception as e:
+                print(f"❌ Telegram error for {chat_id}: {e}")
+
+        print(f"📊 Delivery result: {success_count}/{len(self.chat_ids)} successful")
+        return success_count > 0
+
+    def format_stock_message(self, stock: Dict) -> str:
+        """Format single stock info as bubble message"""
+        emoji_map = {
+            'STRONG BUY': '🟢🟢',
+            'BUY': '🟢',
+            'HOLD': '🟡',
+            'TAKE PROFIT': '💰',
+            'SELL NOW': '🔴',
+            'WAIT': '⏸',
+            'SKIP': '⚪',
+            'MONITOR': '👁️',
+            'NEUTRAL': '⚪'
+        }
+
+        emoji = emoji_map.get(stock['action'], '📊')
+        t = stock['targets']
+        a = stock['analysis']
+
+        # Format volume
+        avg_vol_m = stock['avg_volume'] / 1_000_000
+        today_vol_m = stock['today_volume'] / 1_000_000
+
+        message = f"""
+{emoji} <b>{stock['ticker']}</b> - {stock['name'][:30]}
+{'=' * 40}
+
+<b>🎯 ACTION: {stock['action']}</b>
+{stock['description']}
+
+<b>💰 PRICES</b>
+• Open: Rp {stock['open_price']:,.0f}
+• Current: Rp {stock['current_price']:,.0f} (<b>{a['price_change_pct']:+.2f}%</b>)
+
+<b>💹 BID / ASK</b>
+• Bid: Rp {stock['bid']:,.0f} ({stock['bid_size']:,} lot)
+• Ask: Rp {stock['ask']:,.0f} ({stock['ask_size']:,} lot)
+• Spread: {stock['spread_pct']:.2f}%
+
+<b>🎯 INTRADAY TARGETS</b>
+• Entry: Rp {t['entry_price']:,.0f}
+• Target: Rp {t['target_price']:,.0f} (<b>+{t['target_pct']:.1f}%</b>)
+• Stop Loss: Rp {t['stop_loss']:,.0f} ({t['stop_pct']:.1f}%)
+• R/R Ratio: 1:{t['risk_reward']:.2f}
+
+<b>📊 POSITION</b>
+• Shares: {t['shares']:,} shares
+• Capital: Rp {t['investment']:,.0f}
+• Potential Profit: Rp {t['potential_profit']:,.0f}
+• Potential Loss: Rp {t['potential_loss']:,.0f}
+
+<b>📈 INDICATORS</b>
+• RSI: {a['rsi']:.1f}
+• Volume: {today_vol_m:.1f}M (Avg: {avg_vol_m:.1f}M)
+• Confidence: <b>{stock['confidence']}%</b> ({stock['conf_level']})
+
+<b>🔍 SIGNALS</b>
+"""
+        # Add top 3 signals
+        for signal in a['signals'][:3]:
+            # Remove emoji from signal and clean it
+            clean_signal = signal.replace('✓', '').replace('✗', '').replace('○', '').replace('⚠', '').strip()
+            message += f"• {clean_signal}\n"
+
+        message += f"\n⏰ {datetime.now().strftime('%H:%M:%S')} WIB"
+
+        return message
+
+    def format_summary_message(self, results: List[Dict], phase: str, capital: float) -> str:
+        """Format summary message"""
+        buy_stocks = [r for r in results if 'BUY' in r['action']]
+        sell_stocks = [r for r in results if 'SELL' in r['action'] or 'PROFIT' in r['action']]
+
+        phase_emoji = {
+            'MORNING_SESSION': '🌅',
+            'AFTERNOON_SESSION': '🌆',
+            'MIDDAY_SESSION': '☀️',
+            'PRE_MARKET': '🌄',
+            'AFTER_MARKET': '🌙'
+        }
+
+        message = f"""
+{phase_emoji.get(phase, '📊')} <b>INTRADAY TRADING SUMMARY</b>
+{'=' * 40}
+
+⏰ <b>Time:</b> {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} WIB
+📍 <b>Phase:</b> {phase.replace('_', ' ')}
+💰 <b>Capital:</b> Rp {capital:,.0f}
+
+<b>📊 SCAN RESULTS</b>
+• Total stocks: {len(results)}
+• Buy signals: {len(buy_stocks)}
+• Sell signals: {len(sell_stocks)}
+
+<b>🏆 TOP 3 PICKS</b>
+"""
+
+        # Add top 3 stocks
+        sorted_results = sorted(results, key=lambda x: x['confidence'], reverse=True)
+        for i, stock in enumerate(sorted_results[:3], 1):
+            if stock['action'] not in ['SKIP', 'NEUTRAL']:
+                t = stock['targets']
+                message += f"{i}. {stock['ticker']} {stock['emoji']} +{t['target_pct']:.1f}% ({stock['confidence']}%)\n"
+
+        message += f"""
+{'=' * 40}
+📱 Individual stock details sent separately
+"""
+        return message
 
 
 class IntradayTradingBot:
     """
-    Intraday Trading Bot for Indonesian Stocks
+    Intraday Trading Bot for Indonesian Stocks with Telegram Notifications
     Strategy: Buy in the morning, Sell in the afternoon
     Focus: Quick profits from daily volatility
     """
@@ -27,6 +200,7 @@ class IntradayTradingBot:
         'AMMN.JK',  # Amman Mineral (volatile)
         'UNVR.JK',  # Unilever
         'BRIS.JK',  # Bank BRI Syariah
+        'BUMI.JK',  # Bumi Resources
     ]
 
     # Trading hours IDX: 09:00 - 16:15 WIB
@@ -41,12 +215,26 @@ class IntradayTradingBot:
     # Minimum trading volume (5 million shares for liquidity)
     MIN_VOLUME = 5_000_000
 
-    def __init__(self, stocks=None, capital=10000000):  # Default 10 juta
-        """Initialize intraday trading bot"""
+    def __init__(self, stocks=None, capital=10000000, telegram_bot_token=None, telegram_chat_id=None):
+        """Initialize intraday trading bot with Telegram notifications"""
         self.stocks = stocks if stocks else self.STOCK_LIST
         self.capital = capital
         self.results = []
         self.current_time = datetime.now().time()
+
+        # Setup Telegram
+        self.telegram = None
+        if telegram_bot_token:
+            TELEGRAM_CHAT_IDS = [
+                "1731964139",  # Your personal chat
+                "-5042882073",  # Group 1
+            ]
+
+            # Initialize dengan list chat IDs
+            self.telegram = TelegramNotifier(telegram_bot_token, TELEGRAM_CHAT_IDS)
+            print("✅ Telegram notifications enabled")
+        else:
+            print("⚠️  Telegram notifications disabled (no credentials)")
 
         # Validate minimum capital
         if capital < self.MIN_CAPITAL:
@@ -69,7 +257,7 @@ class IntradayTradingBot:
             return "AFTER_MARKET"
 
     def fetch_intraday_data(self, ticker):
-        """Fetch intraday data with 1-minute intervals"""
+        """Fetch intraday data with 1-minute intervals + bid/ask info"""
         try:
             stock = yf.Ticker(ticker)
 
@@ -79,20 +267,32 @@ class IntradayTradingBot:
             # Get recent 5 days for reference
             daily = stock.history(period='5d', interval='1d')
 
-            # Get current price
+            # Get current price and volume
             if len(intraday) > 0:
                 current_price = intraday['Close'].iloc[-1]
                 open_price = intraday['Open'].iloc[0]
-                today_volume = intraday['Volume'].sum()  # Total volume today
+                today_volume = intraday['Volume'].sum()
             else:
                 current_price = daily['Close'].iloc[-1]
                 open_price = daily['Open'].iloc[-1]
                 today_volume = daily['Volume'].iloc[-1]
 
-            # Calculate average daily volume (last 5 days)
+            # Average daily volume
             avg_volume = daily['Volume'].mean()
 
+            # Stock info (contains bid/ask data)
             info = stock.info
+
+            bid = info.get("bid", np.nan)
+            ask = info.get("ask", np.nan)
+            bid_size = info.get("bidSize", np.nan)
+            ask_size = info.get("askSize", np.nan)
+
+            # calculate bid-ask spread percentage
+            if not np.isnan(bid) and not np.isnan(ask) and ask > 0:
+                spread_pct = ((ask - bid) / ask) * 100
+            else:
+                spread_pct = np.nan
 
             return {
                 'success': True,
@@ -103,8 +303,14 @@ class IntradayTradingBot:
                 'open_price': open_price,
                 'today_volume': today_volume,
                 'avg_volume': avg_volume,
-                'info': info
+                'info': info,
+                'bid': bid,
+                'ask': ask,
+                'bid_size': bid_size,
+                'ask_size': ask_size,
+                'spread_pct': spread_pct
             }
+
         except Exception as e:
             print(f"❌ Error fetching {ticker}: {e}")
             return {'success': False, 'ticker': ticker}
@@ -376,6 +582,11 @@ class IntradayTradingBot:
             'open_price': data['open_price'],
             'today_volume': data['today_volume'],
             'avg_volume': data['avg_volume'],
+            'bid': data['bid'],
+            'ask': data['ask'],
+            'bid_size': data['bid_size'],
+            'ask_size': data['ask_size'],
+            'spread_pct': data['spread_pct'],
             'action': action,
             'emoji': emoji,
             'description': description,
@@ -415,6 +626,46 @@ class IntradayTradingBot:
 
         print(f"\n✅ Scan complete! {len(self.results)} stocks analyzed.\n")
         return self.results
+
+    def send_telegram_notifications(self, top_n=5):
+        """Send notifications to Telegram (summary + individual stocks)"""
+        if not self.telegram:
+            print("⚠️  Telegram not configured. Skipping notifications.")
+            return
+
+        if not self.results:
+            print("⚠️  No results to send.")
+            return
+
+        phase = self.get_trading_phase()
+
+        print("\n📱 Sending Telegram notifications...")
+
+        # 1. Send summary
+        summary = self.telegram.format_summary_message(self.results, phase, self.capital)
+        if self.telegram.send_message(summary):
+            print("✅ Summary sent")
+        else:
+            print("❌ Failed to send summary")
+
+        time.sleep(1)
+
+        # 2. Send individual stock messages (only actionable stocks)
+        actionable_stocks = [r for r in self.results if r['action'] not in ['SKIP', 'NEUTRAL']]
+        sorted_stocks = sorted(actionable_stocks, key=lambda x: x['confidence'], reverse=True)
+
+        sent_count = 0
+        for stock in sorted_stocks[:top_n]:
+            stock_msg = self.telegram.format_stock_message(stock)
+            if self.telegram.send_message(stock_msg):
+                print(f"✅ {stock['ticker']} sent")
+                sent_count += 1
+            else:
+                print(f"❌ {stock['ticker']} failed")
+
+            time.sleep(1.5)  # Delay to avoid rate limiting
+
+        print(f"\n✅ Sent {sent_count}/{top_n} stock notifications to Telegram")
 
     def display_results(self):
         """Display intraday trading opportunities"""
@@ -523,16 +774,41 @@ class IntradayTradingBot:
         df.to_csv(filename, index=False)
         print(f"✅ Watchlist exported to {filename}")
 
-
 # Main execution
 if __name__ == "__main__":
-    print("🚀 Starting Intraday Trading Bot...")
+    print("🚀 Starting Intraday Trading Bot with Telegram...")
 
-    # Set your capital (default 10 million IDR)
+    # ============================================
+    # KONFIGURASI - EDIT BAGIAN INI
+    # ============================================
+
+    # 1. Set your capital (default 10 million IDR)
     TRADING_CAPITAL = 10_000_000
 
+    # 2. Telegram Configuration
+    # How to get:
+    # - Bot Token: Chat with @BotFather on Telegram, create new bot
+    # - Chat ID: Chat with @userinfobot on Telegram
+
+    TELEGRAM_BOT_TOKEN = get_required_env("TELEGRAM_BOT_TOKEN")
+    TELEGRAM_CHAT_IDS = [c.strip() for c in get_required_env("TELEGRAM_CHAT_IDS").split(",") if c.strip()]
+
+    # Set None to disable Telegram
+    # TELEGRAM_BOT_TOKEN = None
+    # TELEGRAM_CHAT_ID = None
+
+    # 3. Auto-run Configuration
+    AUTO_RUN = True  # Set False to run once only
+    RUN_INTERVAL_MINUTES = 30  # Scan every 30 minutes during market hours
+
+    # ============================================
+
     # Initialize bot
-    bot = IntradayTradingBot(capital=TRADING_CAPITAL)
+    bot = IntradayTradingBot(
+        capital=TRADING_CAPITAL,
+        telegram_bot_token=TELEGRAM_BOT_TOKEN,
+        telegram_chat_id=TELEGRAM_CHAT_IDS
+    )
 
     # Check trading phase
     phase = bot.get_trading_phase()
@@ -569,6 +845,9 @@ if __name__ == "__main__":
     print()
     bot.export_watchlist()
 
+    # Send Telegram notifications (top 5 stocks)
+    bot.send_telegram_notifications(top_n=5)
+
     print("\n" + "=" * 80)
     print("📋 INTRADAY TRADING RULES")
     print("=" * 80)
@@ -586,4 +865,22 @@ if __name__ == "__main__":
     print("\n⚠️  DISCLAIMER")
     print("This is for educational purposes only.")
     print("Day trading is risky. Only trade with money you can afford to lose.")
+    print("=" * 80)
+
+    print("\n📱 TELEGRAM SETUP GUIDE")
+    print("=" * 80)
+    print("1. Create Bot:")
+    print("   - Chat with @BotFather on Telegram")
+    print("   - Type /newbot")
+    print("   - Follow instructions, save Bot Token")
+    print()
+    print("2. Get Chat ID:")
+    print("   - Chat with @userinfobot on Telegram")
+    print("   - Bot will reply with your Chat ID")
+    print()
+    print("3. Edit configuration in script:")
+    print("   TELEGRAM_BOT_TOKEN = 'your_bot_token'")
+    print("   TELEGRAM_CHAT_ID = 'your_chat_id'")
+    print()
+    print("4. Run script, notifications will be sent automatically!")
     print("=" * 80)

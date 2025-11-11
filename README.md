@@ -22,7 +22,10 @@ This is a simple stock trading bot implemented in Python. The bot uses historica
    pip install -r requirements.txt
    ```
 ## Usage
-1. Update the `config.py` file with your desired stock symbol, moving average window sizes
+1. Copy .env.example to .env and set your configuration:
+   ```bash
+   cp .env.example .env
+   ```
 2. Run the bot:
    ```bash
    python main.py
