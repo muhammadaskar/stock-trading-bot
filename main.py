@@ -782,9 +782,9 @@ class IntradayTradingBot:
                 return "SKIP", "⚪", "Avoid - Weak setup"
 
         elif phase == "AFTERNOON_SESSION":
-            if score >= 3 and self.current_time < self.HOLD_AFTER_TIME:
+            if score >= 3:
                 return "HOLD", "🟡", "Hold for higher target"
-            elif score >= 0 and self.current_time >= self.HOLD_AFTER_TIME:
+            elif score >= 0:
                 return "TAKE PROFIT", "🟢", "Sell at profit"
             else:
                 return "SELL NOW", "🔴", "Exit position - Weakness"
