@@ -7,362 +7,26 @@ import warnings
 import time
 import requests
 from typing import List, Dict
-import sys
-from dotenv import load_dotenv
-import json
 
 warnings.filterwarnings('ignore')
-
-load_dotenv()
-
-
-def get_required_env(name: str) -> str:
-    """Return environment variable or exit with error (no fallback)."""
-    val = os.getenv(name)
-    if val is None or not val.strip():
-        sys.exit(f"Environment variable {name} is required but not set")
-    return val
-
-
-class AIAnalyzer:
-    """Multi-provider AI Analyzer for trading insights"""
-
-    def __init__(self, provider: str = "deepseek", api_key: str = None):
-        """
-        Initialize AI Analyzer with multiple provider support
-
-        Args:
-            provider: 'deepseek', 'groq', 'ollama', or 'gemini'
-            api_key: API key for the provider (not needed for ollama)
-        """
-        self.provider = provider.lower()
-        self.api_key = api_key
-
-        # Provider configurations
-        self.configs = {
-            'deepseek': {
-                'url': 'https://api.deepseek.com/v1/chat/completions',
-                'model': 'deepseek-chat',
-                'requires_key': True
-            },
-            'groq': {
-                'url': 'https://api.groq.com/openai/v1/chat/completions',
-                'model': 'llama-3.3-70b-versatile',  # Free tier available
-                'requires_key': True
-            },
-            'gemini': {
-                'url': 'https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent',
-                'model': 'gemini-pro',
-                'requires_key': True
-            },
-            'ollama': {
-                'url': 'http://localhost:11434/api/chat',
-                'model': 'llama3.2',  # Local, completely free
-                'requires_key': False
-            }
-        }
-
-        if self.provider not in self.configs:
-            raise ValueError(f"Unsupported provider: {provider}")
-
-        config = self.configs[self.provider]
-
-        if config['requires_key'] and not api_key:
-            raise ValueError(f"{provider} requires an API key")
-
-        self.base_url = config['url']
-        self.model = config['model']
-
-        if config['requires_key']:
-            if self.provider == 'gemini':
-                self.headers = {"Content-Type": "application/json"}
-                self.base_url = f"{self.base_url}?key={api_key}"
-            else:
-                self.headers = {
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json"
-                }
-        else:
-            self.headers = {"Content-Type": "application/json"}
-
-        print(f"✅ AI Analyzer initialized: {self.provider.upper()}")
-        if api_key and config['requires_key']:
-            print(f"   API Key: {api_key[:10]}...{api_key[-4:]}")
-
-        # Test connection
-        if self.provider != 'ollama':  # Skip test for local ollama
-            self._test_connection()
-
-    def _test_connection(self):
-        """Test API connection"""
-        try:
-            print("   Testing API connection...", end=" ")
-
-            if self.provider == 'gemini':
-                payload = {
-                    "contents": [{"parts": [{"text": "Hi"}]}]
-                }
-            else:
-                payload = {
-                    "model": self.model,
-                    "messages": [{"role": "user", "content": "Hi"}],
-                    "max_tokens": 10
-                }
-
-            response = requests.post(
-                self.base_url,
-                headers=self.headers,
-                json=payload,
-                timeout=10
-            )
-
-            if response.status_code == 200:
-                print("✅ Connected!")
-            elif response.status_code == 401:
-                print("❌ Authentication Failed!")
-                raise ValueError("Invalid API key")
-            elif response.status_code == 402:
-                print("❌ Insufficient Balance!")
-                print(f"   {self.provider.upper()} account needs credits/balance")
-                raise ValueError(f"Please top up your {self.provider} account")
-            else:
-                print(f"⚠️  Status {response.status_code}")
-                print(f"   Response: {response.text[:200]}")
-        except requests.exceptions.RequestException as e:
-            print(f"❌ Connection error: {e}")
-
-    def analyze_stock(self, stock_data: Dict) -> Dict:
-        """
-        Analyze stock using AI
-
-        Args:
-            stock_data: Dictionary containing stock information
-
-        Returns:
-            Dictionary with AI analysis results
-        """
-        try:
-            prompt = self._create_analysis_prompt(stock_data)
-
-            # Prepare payload based on provider
-            if self.provider == 'gemini':
-                payload = {
-                    "contents": [{
-                        "parts": [{
-                            "text": f"You are an expert intraday stock trader. {prompt}"
-                        }]
-                    }],
-                    "generationConfig": {
-                        "temperature": 0.3,
-                        "maxOutputTokens": 800
-                    }
-                }
-            elif self.provider == 'ollama':
-                payload = {
-                    "model": self.model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "You are an expert intraday stock trader specializing in Indonesian stocks (IDX). Provide concise, actionable trading insights."
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
-                    "stream": False
-                }
-            else:  # deepseek, groq, openai-compatible
-                payload = {
-                    "model": self.model,
-                    "messages": [
-                        {
-                            "role": "system",
-                            "content": "You are an expert intraday stock trader specializing in Indonesian stocks (IDX). Provide concise, actionable trading insights based on technical analysis and market data."
-                        },
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ],
-                    "temperature": 0.3,
-                    "max_tokens": 800
-                }
-
-            response = requests.post(
-                self.base_url,
-                headers=self.headers,
-                json=payload,
-                timeout=30
-            )
-
-            if response.status_code == 200:
-                result = response.json()
-
-                # Extract response based on provider
-                if self.provider == 'gemini':
-                    ai_response = result['candidates'][0]['content']['parts'][0]['text']
-                elif self.provider == 'ollama':
-                    ai_response = result['message']['content']
-                else:
-                    ai_response = result['choices'][0]['message']['content']
-
-                analysis = self._parse_ai_response(ai_response, stock_data)
-                return analysis
-            else:
-                error_detail = response.text
-                print(f"⚠️  {self.provider.upper()} API error: {response.status_code}")
-                print(f"   Detail: {error_detail[:200]}")
-                return self._fallback_analysis(stock_data)
-
-        except Exception as e:
-            print(f"❌ {self.provider.upper()} analysis error: {e}")
-            return self._fallback_analysis(stock_data)
-
-    def _create_analysis_prompt(self, data: Dict) -> str:
-        """Create detailed prompt for AI analysis"""
-
-        prompt = f"""Analyze this Indonesian stock for INTRADAY trading (buy morning, sell afternoon):
-
-STOCK: {data['ticker']} - {data['name']}
-TRADING PHASE: {data['phase']}
-
-PRICE DATA:
-- Open: Rp {data['open_price']:,.0f}
-- Current: Rp {data['current_price']:,.0f} ({data['analysis']['price_change_pct']:+.2f}%)
-- Bid/Ask: Rp {data['bid']:,.0f} / Rp {data['ask']:,.0f}
-- Spread: {data['spread_pct']:.2f}%
-
-TECHNICAL INDICATORS:
-- RSI: {data['analysis']['rsi']:.1f}
-- EMA 5/15: {data['analysis']['ema_5']:.0f} / {data['analysis']['ema_15']:.0f}
-- VWAP: {data['analysis']['vwap']:.0f}
-- Volume Ratio: {data['analysis']['volume_ratio']:.2f}x
-
-SIGNALS:
-{chr(10).join(f"- {s}" for s in data['analysis']['signals'][:5])}
-
-TARGETS:
-- Entry: Rp {data['targets']['entry_price']:,.0f}
-- Target: Rp {data['targets']['target_price']:,.0f} (+{data['targets']['target_pct']:.1f}%)
-- Stop Loss: Rp {data['targets']['stop_loss']:,.0f} ({data['targets']['stop_pct']:.1f}%)
-
-Provide:
-1. RECOMMENDATION: (BUY/HOLD/SELL/WAIT) - one word
-2. CONFIDENCE: (0-100) - number only
-3. KEY_INSIGHT: 1-2 sentences on why
-4. RISK_FACTORS: 1-2 main risks
-5. TRADE_PLAN: Specific entry/exit strategy
-
-Format as JSON."""
-
-        return prompt
-
-    def _parse_ai_response(self, ai_response: str, stock_data: Dict) -> Dict:
-        """Parse AI response and extract insights"""
-        try:
-            # Try to parse as JSON first
-            if '{' in ai_response and '}' in ai_response:
-                json_start = ai_response.find('{')
-                json_end = ai_response.rfind('}') + 1
-                json_str = ai_response[json_start:json_end]
-                ai_data = json.loads(json_str)
-            else:
-                # Fallback: parse text response
-                ai_data = self._parse_text_response(ai_response)
-
-            return {
-                'ai_recommendation': ai_data.get('RECOMMENDATION', stock_data['action']),
-                'ai_confidence': int(ai_data.get('CONFIDENCE', stock_data['confidence'])),
-                'ai_insight': ai_data.get('KEY_INSIGHT', 'Analysis based on technical indicators'),
-                'ai_risks': ai_data.get('RISK_FACTORS', 'Monitor stop loss levels'),
-                'ai_trade_plan': ai_data.get('TRADE_PLAN', 'Follow intraday strategy'),
-                'ai_raw_response': ai_response,
-                'ai_analysis_success': True
-            }
-
-        except Exception as e:
-            print(f"⚠️  Error parsing AI response: {e}")
-            return {
-                'ai_recommendation': stock_data['action'],
-                'ai_confidence': stock_data['confidence'],
-                'ai_insight': 'Technical analysis based on indicators',
-                'ai_risks': 'Standard intraday risks apply',
-                'ai_trade_plan': ai_response[:200] if ai_response else 'Follow standard strategy',
-                'ai_raw_response': ai_response,
-                'ai_analysis_success': False
-            }
-
-    def _parse_text_response(self, text: str) -> Dict:
-        """Parse non-JSON text response"""
-        data = {}
-
-        # Extract recommendation
-        for rec in ['BUY', 'SELL', 'HOLD', 'WAIT']:
-            if rec in text.upper():
-                data['RECOMMENDATION'] = rec
-                break
-
-        # Extract confidence (look for percentages or scores)
-        import re
-        confidence_match = re.search(r'(\d{1,3})%|\bconfidence[:\s]+(\d{1,3})', text, re.IGNORECASE)
-        if confidence_match:
-            data['CONFIDENCE'] = confidence_match.group(1) or confidence_match.group(2)
-
-        # Extract insights (first few sentences)
-        sentences = text.split('.')[:3]
-        data['KEY_INSIGHT'] = '.'.join(sentences).strip()
-
-        return data
-
-    def _fallback_analysis(self, stock_data: Dict) -> Dict:
-        """Fallback analysis if AI fails"""
-        return {
-            'ai_recommendation': stock_data['action'],
-            'ai_confidence': stock_data['confidence'],
-            'ai_insight': 'Analysis based on technical indicators and market data',
-            'ai_risks': 'Monitor volume and stop loss levels closely',
-            'ai_trade_plan': f"Entry at {stock_data['current_price']:,.0f}, target {stock_data['targets']['target_price']:,.0f}",
-            'ai_raw_response': 'Fallback analysis',
-            'ai_analysis_success': False
-        }
-
-    def batch_analyze(self, stocks_data: List[Dict], max_stocks: int = 5) -> List[Dict]:
-        """Analyze multiple stocks (limited to avoid API rate limits)"""
-        results = []
-
-        sorted_stocks = sorted(stocks_data, key=lambda x: x['confidence'], reverse=True)
-        top_stocks = sorted_stocks[:max_stocks]
-
-        print(f"\n🤖 Running {self.provider.upper()} AI analysis on top {len(top_stocks)} stocks...")
-
-        for i, stock in enumerate(top_stocks, 1):
-            print(f"   [{i}/{len(top_stocks)}] Analyzing {stock['ticker']}...", end=" ")
-
-            ai_analysis = self.analyze_stock(stock)
-            stock.update(ai_analysis)
-            results.append(stock)
-
-            if ai_analysis['ai_analysis_success']:
-                print("✓")
-            else:
-                print("⚠️")
-
-            # Rate limiting
-            time.sleep(1 if self.provider == 'ollama' else 2)
-
-        print("✅ AI analysis complete!\n")
-        return results
-
 
 class TelegramNotifier:
     """Handle Telegram notifications for multiple chats"""
 
     def __init__(self, bot_token: str, chat_ids: list):
+        """
+        Initialize Telegram notifier for multiple chats
+
+        Args:
+            bot_token: Bot token dari @BotFather
+            chat_ids: List of Chat IDs [personal, group1, group2]
+        """
         self.bot_token = bot_token
+        # Filter out empty chat IDs
         self.chat_ids = [chat_id for chat_id in chat_ids if chat_id and str(chat_id).strip()]
         self.base_url = f"https://api.telegram.org/bot{bot_token}"
-        print(f"✅ Telegram configured for {len(self.chat_ids)} chats")
+
+        print(f"✅ Telegram configured for {len(self.chat_ids)} chats: {self.chat_ids}")
 
     def send_message(self, text: str, parse_mode: str = "HTML") -> bool:
         """Send message to all registered chats"""
@@ -373,6 +37,7 @@ class TelegramNotifier:
         success_count = 0
         for chat_id in self.chat_ids:
             try:
+                # Skip empty chat IDs
                 if not chat_id or not str(chat_id).strip():
                     continue
 
@@ -392,10 +57,11 @@ class TelegramNotifier:
             except Exception as e:
                 print(f"❌ Telegram error for {chat_id}: {e}")
 
+        print(f"📊 Delivery result: {success_count}/{len(self.chat_ids)} successful")
         return success_count > 0
 
     def format_stock_message(self, stock: Dict) -> str:
-        """Format single stock info with AI insights"""
+        """Format single stock info as bubble message"""
         emoji_map = {
             'STRONG BUY': '🟢🟢',
             'BUY': '🟢',
@@ -412,6 +78,7 @@ class TelegramNotifier:
         t = stock['targets']
         a = stock['analysis']
 
+        # Format volume
         avg_vol_m = stock['avg_volume'] / 1_000_000
         today_vol_m = stock['today_volume'] / 1_000_000
 
@@ -447,22 +114,12 @@ class TelegramNotifier:
 • RSI: {a['rsi']:.1f}
 • Volume: {today_vol_m:.1f}M (Avg: {avg_vol_m:.1f}M)
 • Confidence: <b>{stock['confidence']}%</b> ({stock['conf_level']})
-"""
 
-        # Add AI insights if available
-        if stock.get('ai_analysis_success'):
-            message += f"""
-<b>🤖 AI INSIGHTS</b>
-• Recommendation: <b>{stock['ai_recommendation']}</b>
-• AI Confidence: {stock['ai_confidence']}%
-• Analysis: {stock['ai_insight'][:100]}
-• Risks: {stock['ai_risks'][:100]}
+<b>🔍 SIGNALS</b>
 """
-
-        message += f"""
-<b>🔍 TOP SIGNALS</b>
-"""
+        # Add top 3 signals
         for signal in a['signals'][:3]:
+            # Remove emoji from signal and clean it
             clean_signal = signal.replace('✓', '').replace('✗', '').replace('○', '').replace('⚠', '').strip()
             message += f"• {clean_signal}\n"
 
@@ -490,22 +147,21 @@ class TelegramNotifier:
 ⏰ <b>Time:</b> {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} WIB
 📍 <b>Phase:</b> {phase.replace('_', ' ')}
 💰 <b>Capital:</b> Rp {capital:,.0f}
-🤖 <b>AI-Powered Analysis</b>
 
 <b>📊 SCAN RESULTS</b>
 • Total stocks: {len(results)}
 • Buy signals: {len(buy_stocks)}
 • Sell signals: {len(sell_stocks)}
 
-<b>🏆 TOP 3 AI PICKS</b>
+<b>🏆 TOP 3 PICKS</b>
 """
 
-        sorted_results = sorted(results, key=lambda x: x.get('ai_confidence', x['confidence']), reverse=True)
+        # Add top 3 stocks
+        sorted_results = sorted(results, key=lambda x: x['confidence'], reverse=True)
         for i, stock in enumerate(sorted_results[:3], 1):
             if stock['action'] not in ['SKIP', 'NEUTRAL']:
                 t = stock['targets']
-                ai_conf = stock.get('ai_confidence', stock['confidence'])
-                message += f"{i}. {stock['ticker']} {stock['emoji']} +{t['target_pct']:.1f}% (AI: {ai_conf}%)\n"
+                message += f"{i}. {stock['ticker']} {stock['emoji']} +{t['target_pct']:.1f}% ({stock['confidence']}%)\n"
 
         message += f"""
 {'=' * 40}
@@ -515,54 +171,66 @@ class TelegramNotifier:
 
 
 class IntradayTradingBot:
-    """Intraday Trading Bot with DeepSeek AI Integration"""
+    """
+    Intraday Trading Bot for Indonesian Stocks with Telegram Notifications
+    Strategy: Buy in the morning, Sell in the afternoon
+    Focus: Quick profits from daily volatility
+    """
 
+    # High liquidity Indonesian stocks (good for day trading)
     STOCK_LIST = [
-        'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK',
-        'GOTO.JK', 'BBNI.JK', 'AMMN.JK', 'UNVR.JK', 'BRIS.JK', 'BUMI.JK',
+        # 'BBCA.JK',  # Bank BCA
+        # 'BBRI.JK',  # Bank BRI
+        # 'BMRI.JK',  # Bank Mandiri
+        # 'TLKM.JK',  # Telkom
+        # 'ASII.JK',  # Astra
+        # 'GOTO.JK',  # GoTo (high volatility)
+        # 'BBNI.JK',  # Bank BNI
+        # 'AMMN.JK',  # Amman Mineral (volatile)
+        # 'UNVR.JK',  # Unilever
+        # 'BRIS.JK',  # Bank BRI Syariah
+        'BUMI.JK',  # Bumi Resources
     ]
 
+    # Trading hours IDX: 09:00 - 16:15 WIB
     MARKET_OPEN = dt_time(9, 0)
-    MORNING_END = dt_time(10, 30)
-    AFTERNOON_START = dt_time(14, 30)
-    MARKET_CLOSE = dt_time(16, 0)
-    HOLD_AFTER_TIME = dt_time(15, 40)
+    MORNING_END = dt_time(10, 30)  # Ideal buying window
+    AFTERNOON_START = dt_time(14, 30)  # Ideal selling window
+    MARKET_CLOSE = dt_time(16, 00)
 
+    HOLD_AFTER_TIME = dt_time(15, 40)  # Time to consider taking profit
+
+    # Minimum capital requirement (5 million IDR)
     MIN_CAPITAL = 5_000_000
+
+    # Minimum trading volume (5 million shares for liquidity)
     MIN_VOLUME = 5_000_000
 
-    def __init__(self, stocks=None, capital=10000000, telegram_bot_token=None,
-                 telegram_chat_id=None, ai_provider="deepseek", ai_api_key=None):
-        """Initialize bot with AI integration"""
+    def __init__(self, stocks=None, capital=10000000, telegram_bot_token=None, telegram_chat_id=None):
+        """Initialize intraday trading bot with Telegram notifications"""
         self.stocks = stocks if stocks else self.STOCK_LIST
         self.capital = capital
         self.results = []
         self.current_time = datetime.now().time()
 
-        # Setup AI Analyzer (supports multiple providers)
-        self.ai_analyzer = None
-        if ai_api_key or ai_provider == 'ollama':
-            try:
-                self.ai_analyzer = AIAnalyzer(provider=ai_provider, api_key=ai_api_key)
-                print(f"✅ {ai_provider.upper()} AI enabled")
-            except Exception as e:
-                print(f"⚠️  AI disabled: {e}")
-        else:
-            print("⚠️  AI disabled (no API key)")
-
         # Setup Telegram
         self.telegram = None
         if telegram_bot_token:
             TELEGRAM_CHAT_IDS = [
-                "1731964139",
-                "-5042882073",
+                "1731964139",  # Your personal chat
+                "-5042882073",  # Group 1
             ]
-            self.telegram = TelegramNotifier(telegram_bot_token, TELEGRAM_CHAT_IDS)
-        else:
-            print("⚠️  Telegram notifications disabled")
 
+            # Initialize dengan list chat IDs
+            self.telegram = TelegramNotifier(telegram_bot_token, TELEGRAM_CHAT_IDS)
+            print("✅ Telegram notifications enabled")
+        else:
+            print("⚠️  Telegram notifications disabled (no credentials)")
+
+        # Validate minimum capital
         if capital < self.MIN_CAPITAL:
             print(f"⚠️  Warning: Capital below recommended minimum (Rp {self.MIN_CAPITAL:,})")
+            print(f"   Liquidity and position sizing may be limited.")
 
     def get_trading_phase(self):
         """Determine current trading phase"""
@@ -571,11 +239,11 @@ class IntradayTradingBot:
         if now < self.MARKET_OPEN:
             return "PRE_MARKET"
         elif now <= self.MORNING_END:
-            return "MORNING_SESSION"
+            return "MORNING_SESSION"  # Best time to BUY
         elif now < self.AFTERNOON_START:
             return "MIDDAY_SESSION"
         elif now < self.MARKET_CLOSE:
-            return "AFTERNOON_SESSION"
+            return "AFTERNOON_SESSION"  # Best time to SELL
         else:
             return "AFTER_MARKET"
 
@@ -583,9 +251,14 @@ class IntradayTradingBot:
         """Fetch intraday data with 1-minute intervals + bid/ask info"""
         try:
             stock = yf.Ticker(ticker)
+
+            # Get today's 1-minute data
             intraday = stock.history(period='1d', interval='1m')
+
+            # Get recent 5 days for reference
             daily = stock.history(period='5d', interval='1d')
 
+            # Get current price and volume
             if len(intraday) > 0:
                 current_price = intraday['Close'].iloc[-1]
                 open_price = intraday['Open'].iloc[0]
@@ -595,7 +268,10 @@ class IntradayTradingBot:
                 open_price = daily['Open'].iloc[-1]
                 today_volume = daily['Volume'].iloc[-1]
 
+            # Average daily volume
             avg_volume = daily['Volume'].mean()
+
+            # Stock info (contains bid/ask data)
             info = stock.info
 
             bid = info.get("bid", np.nan)
@@ -603,6 +279,7 @@ class IntradayTradingBot:
             bid_size = info.get("bidSize", np.nan)
             ask_size = info.get("askSize", np.nan)
 
+            # calculate bid-ask spread percentage
             if not np.isnan(bid) and not np.isnan(ask) and ask > 0:
                 spread_pct = ((ask - bid) / ask) * 100
             else:
@@ -636,18 +313,25 @@ class IntradayTradingBot:
         if len(df) < 20:
             return None
 
+        # Short-term EMAs for intraday
         df['EMA_5'] = df['Close'].ewm(span=5, adjust=False).mean()
         df['EMA_15'] = df['Close'].ewm(span=15, adjust=False).mean()
         df['EMA_30'] = df['Close'].ewm(span=30, adjust=False).mean()
 
+        # Intraday RSI (faster period)
         delta = df['Close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=9).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=9).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
 
+        # VWAP (Volume Weighted Average Price) - important for intraday
         df['VWAP'] = (df['Close'] * df['Volume']).cumsum() / df['Volume'].cumsum()
+
+        # Intraday Momentum
         df['Momentum'] = df['Close'] - df['Close'].shift(10)
+
+        # Volume analysis
         df['Volume_MA'] = df['Volume'].rolling(window=20).mean()
         df['Volume_Ratio'] = df['Volume'] / df['Volume_MA']
 
@@ -667,6 +351,7 @@ class IntradayTradingBot:
         signals = []
         score = 0
 
+        # Price movement from open
         price_change_pct = ((current_price - open_price) / open_price) * 100
 
         if price_change_pct > 0:
@@ -676,6 +361,7 @@ class IntradayTradingBot:
             signals.append(f"✗ Down {abs(price_change_pct):.2f}% from open")
             score -= 1
 
+        # EMA Crossover (fast signal for intraday)
         ema_5 = df['EMA_5'].iloc[-1]
         ema_15 = df['EMA_15'].iloc[-1]
         ema_30 = df['EMA_30'].iloc[-1]
@@ -693,6 +379,7 @@ class IntradayTradingBot:
             signals.append("✗ Short-term bearish")
             score -= 1
 
+        # RSI (faster for intraday)
         rsi = df['RSI'].iloc[-1]
         if rsi < 35:
             signals.append(f"✓ RSI {rsi:.1f} (Oversold - Buy opportunity)")
@@ -703,6 +390,7 @@ class IntradayTradingBot:
         else:
             signals.append(f"○ RSI {rsi:.1f} (Neutral)")
 
+        # VWAP (critical for intraday)
         vwap = df['VWAP'].iloc[-1]
         if current_price > vwap:
             signals.append(f"✓ Price above VWAP (Institutional buying)")
@@ -711,6 +399,7 @@ class IntradayTradingBot:
             signals.append(f"✗ Price below VWAP (Weak momentum)")
             score -= 1
 
+        # Volume analysis
         volume_ratio = df['Volume_Ratio'].iloc[-1]
         if volume_ratio > 1.5:
             signals.append(f"✓ High volume ({volume_ratio:.1f}x avg)")
@@ -719,6 +408,7 @@ class IntradayTradingBot:
             signals.append(f"⚠ Low volume ({volume_ratio:.1f}x avg)")
             score -= 1
 
+        # Momentum
         momentum = df['Momentum'].iloc[-1]
         if momentum > 0:
             signals.append("✓ Positive momentum")
@@ -740,18 +430,26 @@ class IntradayTradingBot:
 
     def calculate_intraday_targets(self, current_price, open_price, analysis):
         """Calculate intraday target and stop loss"""
+        # Average daily volatility for Indonesian stocks: 1-3%
+        # Target: 1.5-2.5% profit
+        # Stop loss: 0.5-1% loss
+
+        # Dynamic target based on morning performance
         price_change = analysis['price_change_pct']
 
         if price_change > 0:
+            # If already up, target smaller profit
             target_pct = 1.5
             stop_pct = 0.8
         else:
+            # If down, look for bounce with higher target
             target_pct = 2.5
             stop_pct = 1.2
 
         target_price = current_price * (1 + target_pct / 100)
         stop_loss = current_price * (1 - stop_pct / 100)
 
+        # Calculate potential profit
         shares = int(self.capital / current_price)
         potential_profit = (target_price - current_price) * shares
         potential_loss = (current_price - stop_loss) * shares
@@ -772,6 +470,7 @@ class IntradayTradingBot:
     def generate_intraday_action(self, score, phase):
         """Generate trading action based on time and score"""
         if phase == "MORNING_SESSION":
+            # Morning: Focus on buying
             if score >= 5:
                 return "STRONG BUY", "🟢🟢", "Buy NOW - Strong momentum"
             elif score >= 2:
@@ -782,6 +481,7 @@ class IntradayTradingBot:
                 return "SKIP", "⚪", "Avoid - Weak setup"
 
         elif phase == "AFTERNOON_SESSION":
+            # Afternoon: Focus on selling/taking profit
             if score >= 3 and self.current_time < self.HOLD_AFTER_TIME:
                 return "HOLD", "🟡", "Hold for higher target"
             elif score >= 0 and self.current_time >= self.HOLD_AFTER_TIME:
@@ -790,6 +490,7 @@ class IntradayTradingBot:
                 return "SELL NOW", "🔴", "Exit position - Weakness"
 
         else:
+            # Midday or after hours
             if score >= 4:
                 return "MONITOR", "👁️", "Watch for entry"
             else:
@@ -798,17 +499,21 @@ class IntradayTradingBot:
     def calculate_confidence(self, score, volume_ratio, phase):
         """Calculate confidence for intraday trade"""
         base_confidence = 50
+
+        # Score contribution
         base_confidence += score * 5
 
+        # Volume boost
         if volume_ratio > 1.5:
             base_confidence += 15
         elif volume_ratio < 0.7:
             base_confidence -= 10
 
+        # Time of day factor
         if phase == "MORNING_SESSION":
-            base_confidence += 10
+            base_confidence += 10  # Best time to enter
         elif phase == "AFTERNOON_SESSION":
-            base_confidence += 5
+            base_confidence += 5  # Good time to exit
 
         confidence = max(0, min(100, base_confidence))
 
@@ -830,7 +535,9 @@ class IntradayTradingBot:
         if not data['success']:
             return None
 
+        # Check volume requirement FIRST (most important for liquidity)
         if data['avg_volume'] < self.MIN_VOLUME:
+            # Skip low volume stocks - hard to enter/exit
             return None
 
         analysis = self.intraday_analysis(data)
@@ -844,8 +551,9 @@ class IntradayTradingBot:
             analysis
         )
 
+        # Check if stock meets minimum capital requirement
         if targets['investment'] < self.MIN_CAPITAL:
-            return None
+            return None  # Skip stocks below 5M investment
 
         action, emoji, description = self.generate_intraday_action(
             analysis['score'],
@@ -886,12 +594,11 @@ class IntradayTradingBot:
         phase = self.get_trading_phase()
 
         print("=" * 80)
-        print("🤖 INTRADAY TRADING BOT - AI-POWERED ANALYSIS")
+        print("INTRADAY TRADING BOT - BUY MORNING, SELL AFTERNOON")
         print("=" * 80)
         print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} WIB")
         print(f"Trading Phase: {phase}")
         print(f"Capital: Rp {self.capital:,.0f}")
-        print(f"AI Status: {'✅ Enabled' if self.ai_analyzer else '⚠️ Disabled'}")
         print(f"Scanning {len(self.stocks)} stocks...\n")
 
         self.results = []
@@ -904,23 +611,11 @@ class IntradayTradingBot:
                 self.results.append(result)
                 print(f"✓ {result['action']}")
             else:
-                print(f"✗ Skipped")
+                print(f"✗ Failed")
 
             time.sleep(0.5)
 
-        print(f"\n✅ Technical scan complete! {len(self.results)} stocks analyzed.")
-
-        # Run AI analysis on top stocks
-        if self.ai_analyzer and self.results:
-            ai_enhanced = self.ai_analyzer.batch_analyze(self.results, max_stocks=5)
-
-            # Update results with AI analysis
-            for i, result in enumerate(self.results):
-                for ai_result in ai_enhanced:
-                    if result['ticker'] == ai_result['ticker']:
-                        self.results[i].update(ai_result)
-                        break
-
+        print(f"\n✅ Scan complete! {len(self.results)} stocks analyzed.\n")
         return self.results
 
     def send_telegram_notifications(self, top_n=5):
@@ -946,15 +641,9 @@ class IntradayTradingBot:
 
         time.sleep(1)
 
-        # 2. Send individual stock messages (prioritize AI-analyzed stocks)
+        # 2. Send individual stock messages (only actionable stocks)
         actionable_stocks = [r for r in self.results if r['action'] not in ['SKIP', 'NEUTRAL']]
-
-        # Sort by AI confidence if available, otherwise use regular confidence
-        sorted_stocks = sorted(
-            actionable_stocks,
-            key=lambda x: x.get('ai_confidence', x['confidence']),
-            reverse=True
-        )
+        sorted_stocks = sorted(actionable_stocks, key=lambda x: x['confidence'], reverse=True)
 
         sent_count = 0
         for stock in sorted_stocks[:top_n]:
@@ -965,33 +654,30 @@ class IntradayTradingBot:
             else:
                 print(f"❌ {stock['ticker']} failed")
 
-            time.sleep(1.5)
+            time.sleep(1.5)  # Delay to avoid rate limiting
 
         print(f"\n✅ Sent {sent_count}/{top_n} stock notifications to Telegram")
 
     def display_results(self):
-        """Display intraday trading opportunities with AI insights"""
+        """Display intraday trading opportunities"""
         if not self.results:
             print("No results to display.")
             return
 
         phase = self.get_trading_phase()
-        sorted_results = sorted(
-            self.results,
-            key=lambda x: x.get('ai_confidence', x['confidence']),
-            reverse=True
-        )
+        sorted_results = sorted(self.results, key=lambda x: x['confidence'], reverse=True)
 
         print("=" * 80)
         if phase == "MORNING_SESSION":
-            print("🌅 MORNING SESSION - AI-POWERED BUY RECOMMENDATIONS")
+            print("🌅 MORNING SESSION - TOP STOCKS TO BUY")
         elif phase == "AFTERNOON_SESSION":
-            print("🌆 AFTERNOON SESSION - AI-POWERED POSITION MANAGEMENT")
+            print("🌆 AFTERNOON SESSION - POSITION MANAGEMENT")
         else:
-            print("🤖 AI-POWERED INTRADAY OPPORTUNITIES")
+            print("INTRADAY OPPORTUNITIES")
         print("=" * 80)
 
         for i, r in enumerate(sorted_results, 1):
+            # Only show actionable stocks
             if r['action'] in ['SKIP', 'NEUTRAL']:
                 continue
 
@@ -1000,15 +686,7 @@ class IntradayTradingBot:
             print(f"Action: {r['emoji']} {r['action']} - {r['description']}")
             print(f"Confidence: {r['confidence']}% ({r['conf_level']})")
 
-            # Display AI insights if available
-            if r.get('ai_analysis_success'):
-                print(f"\n🤖 AI ANALYSIS:")
-                print(f"   Recommendation: {r['ai_recommendation']}")
-                print(f"   AI Confidence: {r['ai_confidence']}%")
-                print(f"   Key Insight: {r['ai_insight'][:150]}")
-                print(f"   Risk Factors: {r['ai_risks'][:150]}")
-                print(f"   Trade Plan: {r['ai_trade_plan'][:150]}")
-
+            # Display volume info (important for liquidity)
             avg_vol_m = r['avg_volume'] / 1_000_000
             today_vol_m = r['today_volume'] / 1_000_000
             print(f"\n📊 LIQUIDITY:")
@@ -1027,7 +705,7 @@ class IntradayTradingBot:
             print(f"   Risk/Reward: 1:{t['risk_reward']:.2f}")
 
             print(f"\n📊 POSITION SIZING:")
-            print(f"   Shares: {t['shares']:,} shares")
+            print(f"   Shares: {t['shares']:,} lots")
             print(f"   Investment: Rp {t['investment']:,.0f}")
             print(f"   Potential Profit: Rp {t['potential_profit']:,.0f}")
             print(f"   Potential Loss: Rp {t['potential_loss']:,.0f}")
@@ -1039,28 +717,26 @@ class IntradayTradingBot:
         print("\n" + "=" * 80)
 
     def get_top_intraday_picks(self, limit=3):
-        """Get top AI-powered stocks for today's trading"""
+        """Get top stocks for today's trading"""
         if not self.results:
             return []
 
         phase = self.get_trading_phase()
 
         if phase == "MORNING_SESSION":
+            # Morning: prioritize BUY signals
             filtered = [r for r in self.results if 'BUY' in r['action']]
         elif phase == "AFTERNOON_SESSION":
+            # Afternoon: show all positions
             filtered = [r for r in self.results if r['action'] != 'SKIP']
         else:
             filtered = self.results
 
-        sorted_picks = sorted(
-            filtered,
-            key=lambda x: x.get('ai_confidence', x['confidence']),
-            reverse=True
-        )
+        sorted_picks = sorted(filtered, key=lambda x: x['confidence'], reverse=True)
         return sorted_picks[:limit]
 
-    def export_watchlist(self, filename='intraday_watchlist_ai.csv'):
-        """Export AI-powered watchlist"""
+    def export_watchlist(self, filename='intraday_watchlist.csv'):
+        """Export today's watchlist"""
         if not self.results:
             print("No results to export.")
             return
@@ -1068,7 +744,7 @@ class IntradayTradingBot:
         data = []
         for r in self.results:
             if r['action'] not in ['SKIP', 'NEUTRAL']:
-                row = {
+                data.append({
                     'Time': r['timestamp'].strftime('%H:%M:%S'),
                     'Ticker': r['ticker'],
                     'Action': r['action'],
@@ -1083,81 +759,46 @@ class IntradayTradingBot:
                     'Today Volume (M)': round(r['today_volume'] / 1_000_000, 2),
                     'RSI': r['analysis']['rsi'],
                     'Change %': r['analysis']['price_change_pct']
-                }
-
-                # Add AI fields if available
-                if r.get('ai_analysis_success'):
-                    row.update({
-                        'AI Recommendation': r['ai_recommendation'],
-                        'AI Confidence': r['ai_confidence'],
-                        'AI Insight': r['ai_insight'][:100]
-                    })
-
-                data.append(row)
+                })
 
         df = pd.DataFrame(data)
         df.to_csv(filename, index=False)
-        print(f"✅ AI-powered watchlist exported to {filename}")
-
+        print(f"✅ Watchlist exported to {filename}")
 
 # Main execution
 if __name__ == "__main__":
-    print("🚀 Starting AI-Powered Intraday Trading Bot...")
-    print("🤖 Powered by DeepSeek AI\n")
+    print("🚀 Starting Intraday Trading Bot with Telegram...")
 
     # ============================================
-    # CONFIGURATION - EDIT THIS SECTION
+    # KONFIGURASI - EDIT BAGIAN INI
     # ============================================
 
-    # 1. Trading Capital (default 10 million IDR)
+    # 1. Set your capital (default 10 million IDR)
     TRADING_CAPITAL = 10_000_000
 
-    # 2. AI Configuration - Choose your provider
-    # Options: 'deepseek', 'groq', 'gemini', 'ollama'
+    # 2. Telegram Configuration
+    # How to get:
+    # - Bot Token: Chat with @BotFather on Telegram, create new bot
+    # - Chat ID: Chat with @userinfobot on Telegram
 
-    AI_PROVIDER = os.getenv("AI_PROVIDER", "groq")  # Default to Groq (has free tier)
+    TELEGRAM_BOT_TOKEN = ""
+    TELEGRAM_CHAT_IDS = []
 
-    # Get API key based on provider
-    if AI_PROVIDER == "deepseek":
-        AI_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-    elif AI_PROVIDER == "groq":
-        AI_API_KEY = os.getenv("GROQ_API_KEY")  # Get from https://console.groq.com
-    elif AI_PROVIDER == "gemini":
-        AI_API_KEY = os.getenv("GEMINI_API_KEY")  # Get from https://makersuite.google.com
-    elif AI_PROVIDER == "ollama":
-        AI_API_KEY = None  # Ollama runs locally, no API key needed
-    else:
-        AI_API_KEY = None
+    # Set None to disable Telegram
+    # TELEGRAM_BOT_TOKEN = None
+    # TELEGRAM_CHAT_ID = None
 
-    # Debug: Check if API key is loaded
-    if AI_API_KEY:
-        print(f"✓ {AI_PROVIDER.upper()} API Key loaded: {AI_API_KEY[:15]}...")
-    elif AI_PROVIDER == "ollama":
-        print("✓ Using Ollama (local, no API key needed)")
-    else:
-        print(f"⚠️  {AI_PROVIDER.upper()} API Key not found")
-        print(f"   Add to .env: {AI_PROVIDER.upper()}_API_KEY=your_key")
-
-    # Set to None to disable AI analysis
-    # AI_API_KEY = None
-
-    # 3. Telegram Configuration
-    TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-    TELEGRAM_CHAT_IDS = [c.strip() for c in os.getenv("TELEGRAM_CHAT_IDS", "").split(",") if c.strip()]
-
-    # 4. Auto-run Configuration
+    # 3. Auto-run Configuration
     AUTO_RUN = True  # Set False to run once only
-    RUN_INTERVAL_MINUTES = 30  # Scan every 30 minutes
+    RUN_INTERVAL_MINUTES = 30  # Scan every 30 minutes during market hours
 
     # ============================================
 
-    # Initialize AI-powered bot
+    # Initialize bot
     bot = IntradayTradingBot(
         capital=TRADING_CAPITAL,
         telegram_bot_token=TELEGRAM_BOT_TOKEN,
-        telegram_chat_id=TELEGRAM_CHAT_IDS,
-        ai_provider=AI_PROVIDER,
-        ai_api_key=AI_API_KEY
+        telegram_chat_id=TELEGRAM_CHAT_IDS
     )
 
     # Check trading phase
@@ -1165,19 +806,19 @@ if __name__ == "__main__":
     print(f"\n⏰ Current phase: {phase}")
 
     if phase == "PRE_MARKET":
-        print("📅 Market hasn't opened yet. Preparing AI-powered watchlist...")
+        print("📅 Market hasn't opened yet. Preparing watchlist...")
     elif phase == "AFTER_MARKET":
-        print("🌙 Market closed. Review today's AI-analyzed performance.")
+        print("🌙 Market closed. Review today's performance.")
 
-    # Scan stocks with AI analysis
+    # Scan stocks
     results = bot.scan_all_stocks()
 
-    # Display AI-powered opportunities
+    # Display opportunities
     bot.display_results()
 
-    # Show top AI picks
+    # Show top picks
     print("\n" + "=" * 80)
-    print("🏆 TOP AI-POWERED INTRADAY PICKS")
+    print("🏆 TOP INTRADAY PICKS")
     print("=" * 80)
 
     top_picks = bot.get_top_intraday_picks(3)
@@ -1186,72 +827,51 @@ if __name__ == "__main__":
         t = pick['targets']
         profit_pct = t['target_pct']
 
-        ai_tag = " 🤖" if pick.get('ai_analysis_success') else ""
-
-        print(f"\n{i}. {pick['ticker']} {pick['emoji']} {pick['action']}{ai_tag}")
+        print(f"\n{i}. {pick['ticker']} {pick['emoji']} {pick['action']}")
         print(f"   Entry: Rp {t['entry_price']:,.0f} → Target: Rp {t['target_price']:,.0f} (+{profit_pct:.1f}%)")
         print(f"   Investment: Rp {t['investment']:,.0f} → Profit: Rp {t['potential_profit']:,.0f}")
-        print(f"   Confidence: {pick['confidence']}%", end="")
+        print(f"   Confidence: {pick['confidence']}%")
 
-        if pick.get('ai_analysis_success'):
-            print(f" | AI: {pick['ai_confidence']}%")
-            print(f"   AI Insight: {pick['ai_insight'][:120]}")
-        else:
-            print()
-
-    # Export AI-powered watchlist
+    # Export watchlist
     print()
     bot.export_watchlist()
 
-    # Send Telegram notifications with AI insights
+    # Send Telegram notifications (top 5 stocks)
     bot.send_telegram_notifications(top_n=5)
 
     print("\n" + "=" * 80)
-    print("📋 AI-POWERED INTRADAY TRADING RULES")
+    print("📋 INTRADAY TRADING RULES")
     print("=" * 80)
-    print("✓ AI analyzes top 5 stocks for deeper insights")
-    print("✓ Combines technical indicators + AI recommendations")
     print("✓ Best entry: 09:00 - 10:30 WIB")
     print("✓ Best exit: 14:30 - 16:00 WIB")
     print("✓ Always use stop loss (max 1% loss)")
     print("✓ Target: 1.5-2.5% profit per trade")
     print("✓ Don't hold overnight!")
-    print("✓ Follow AI risk warnings")
-    print("✓ MINIMUM VOLUME: 5M shares/day")
+    print("✓ Cut loss fast, let profit run")
+    print("✓ MINIMUM VOLUME: 5M shares/day (for easy entry/exit)")
+    print("✓ Focus on high liquidity stocks ONLY")
+    print("✓ Check bid-ask spread before entering")
     print("=" * 80)
 
     print("\n⚠️  DISCLAIMER")
     print("This is for educational purposes only.")
-    print("AI provides insights but is not financial advice.")
-    print("Day trading is risky. Trade responsibly.")
+    print("Day trading is risky. Only trade with money you can afford to lose.")
     print("=" * 80)
 
-    print("\n📱 SETUP GUIDE")
+    print("\n📱 TELEGRAM SETUP GUIDE")
     print("=" * 80)
-    print("1. DeepSeek AI API:")
-    print("   - Visit: https://platform.deepseek.com")
-    print("   - Create account and get API key")
-    print("   - Add to .env: DEEPSEEK_API_KEY=your_key")
+    print("1. Create Bot:")
+    print("   - Chat with @BotFather on Telegram")
+    print("   - Type /newbot")
+    print("   - Follow instructions, save Bot Token")
     print()
-    print("2. Telegram Bot:")
-    print("   - Chat with @BotFather, create bot")
-    print("   - Get Bot Token")
-    print("   - Chat with @userinfobot for Chat ID")
-    print("   - Add to .env: TELEGRAM_BOT_TOKEN=your_token")
-    print("   - Add to .env: TELEGRAM_CHAT_IDS=chat_id1,chat_id2")
+    print("2. Get Chat ID:")
+    print("   - Chat with @userinfobot on Telegram")
+    print("   - Bot will reply with your Chat ID")
     print()
-    print("3. Environment Variables (.env file):")
-    print("   DEEPSEEK_API_KEY=sk-...")
-    print("   TELEGRAM_BOT_TOKEN=123456:ABC...")
-    print("   TELEGRAM_CHAT_IDS=1234567890,-1001234567890")
-    print("=" * 80)
-
-    print("\n🎯 FEATURES:")
-    print("✅ Real-time stock scanning")
-    print("✅ Technical indicator analysis")
-    print("✅ DeepSeek AI insights & recommendations")
-    print("✅ Risk factor analysis")
-    print("✅ Automated Telegram notifications")
-    print("✅ Multi-chat support")
-    print("✅ AI-powered trade plans")
+    print("3. Edit configuration in script:")
+    print("   TELEGRAM_BOT_TOKEN = 'your_bot_token'")
+    print("   TELEGRAM_CHAT_ID = 'your_chat_id'")
+    print()
+    print("4. Run script, notifications will be sent automatically!")
     print("=" * 80)
