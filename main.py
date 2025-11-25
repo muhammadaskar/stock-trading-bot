@@ -24,6 +24,217 @@ def get_required_env(name: str) -> str:
     return val
 
 
+class AIStockSelector:
+    """AI-powered dynamic stock selector for Indonesian market"""
+
+    def __init__(self, ai_analyzer):
+        self.ai_analyzer = ai_analyzer
+
+        # Indonesian stock universe (common liquid stocks)
+        self.stock_universe = [
+            'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'BBNI.JK', 'BRIS.JK',  # Banking
+            'TLKM.JK', 'EXCL.JK', 'ISAT.JK',  # Telecom
+            'ASII.JK', 'AUTO.JK', 'UNTR.JK',  # Automotive
+            'GOTO.JK', 'BUKA.JK', 'EMTK.JK',  # Tech
+            'UNVR.JK', 'ICBP.JK', 'INDF.JK',  # Consumer
+            'AMMN.JK', 'MDKA.JK', 'ANTM.JK',  # Mining
+            'ADRO.JK', 'PTBA.JK', 'ITMG.JK',  # Coal
+            'BUMI.JK', 'HRUM.JK', 'GEMS.JK',  # Mining
+            'MEDC.JK', 'INCO.JK', 'TINS.JK',  # Metals
+            'AKRA.JK', 'MAPI.JK', 'ACES.JK',  # Retail
+            'WSKT.JK', 'WIKA.JK', 'PTPP.JK',  # Construction
+            'JSMR.JK', 'SMGR.JK', 'WSBP.JK',  # Infrastructure
+        ]
+
+    def get_market_sentiment(self) -> str:
+        """Get current market sentiment using AI"""
+        try:
+            prompt = f"""Analyze current Indonesian stock market (IDX) sentiment for today ({datetime.now().strftime('%Y-%m-%d')}).
+
+Based on:
+1. Global market trends
+2. Indonesian economic indicators
+3. Sector rotation patterns
+4. Recent market behavior
+
+Provide:
+1. SENTIMENT: (BULLISH/BEARISH/NEUTRAL)
+2. HOT_SECTORS: Top 3 performing sectors today (comma-separated)
+3. REASONING: Brief explanation (2-3 sentences)
+
+Format as JSON only."""
+
+            if self.ai_analyzer.provider == 'gemini':
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.3, "maxOutputTokens": 500}
+                }
+            elif self.ai_analyzer.provider == 'ollama':
+                payload = {
+                    "model": self.ai_analyzer.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False
+                }
+            else:
+                payload = {
+                    "model": self.ai_analyzer.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.3,
+                    "max_tokens": 500
+                }
+
+            response = requests.post(
+                self.ai_analyzer.base_url,
+                headers=self.ai_analyzer.headers,
+                json=payload,
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+
+                if self.ai_analyzer.provider == 'gemini':
+                    ai_response = result['candidates'][0]['content']['parts'][0]['text']
+                elif self.ai_analyzer.provider == 'ollama':
+                    ai_response = result['message']['content']
+                else:
+                    ai_response = result['choices'][0]['message']['content']
+
+                # Parse JSON response
+                if '{' in ai_response and '}' in ai_response:
+                    json_start = ai_response.find('{')
+                    json_end = ai_response.rfind('}') + 1
+                    json_str = ai_response[json_start:json_end]
+                    sentiment_data = json.loads(json_str)
+
+                    return sentiment_data
+
+        except Exception as e:
+            print(f"⚠️  Error getting market sentiment: {e}")
+
+        # Fallback
+        return {
+            'SENTIMENT': 'NEUTRAL',
+            'HOT_SECTORS': 'Banking, Technology, Consumer',
+            'REASONING': 'Using default market analysis'
+        }
+
+    def get_ai_stock_recommendations(self, sentiment: Dict, limit: int = 15) -> List[str]:
+        """Get AI-recommended stocks based on market sentiment"""
+        try:
+            stock_list_str = ', '.join(self.stock_universe)
+
+            prompt = f"""You are an expert Indonesian stock trader. Based on current market analysis:
+
+MARKET SENTIMENT: {sentiment['SENTIMENT']}
+HOT SECTORS: {sentiment['HOT_SECTORS']}
+REASONING: {sentiment['REASONING']}
+
+From this list of liquid Indonesian stocks:
+{stock_list_str}
+
+Select the TOP {limit} stocks for INTRADAY TRADING today based on:
+1. Sector alignment with hot sectors
+2. Historical intraday volatility
+3. Liquidity (high volume)
+4. Technical setup potential
+5. Current market momentum
+
+Provide ONLY a JSON array of ticker symbols, nothing else.
+Example: ["BBCA.JK", "TLKM.JK", "GOTO.JK"]
+
+Return ONLY the JSON array."""
+
+            if self.ai_analyzer.provider == 'gemini':
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.4, "maxOutputTokens": 300}
+                }
+            elif self.ai_analyzer.provider == 'ollama':
+                payload = {
+                    "model": self.ai_analyzer.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": False
+                }
+            else:
+                payload = {
+                    "model": self.ai_analyzer.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.4,
+                    "max_tokens": 300
+                }
+
+            response = requests.post(
+                self.ai_analyzer.base_url,
+                headers=self.ai_analyzer.headers,
+                json=payload,
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+
+                if self.ai_analyzer.provider == 'gemini':
+                    ai_response = result['candidates'][0]['content']['parts'][0]['text']
+                elif self.ai_analyzer.provider == 'ollama':
+                    ai_response = result['message']['content']
+                else:
+                    ai_response = result['choices'][0]['message']['content']
+
+                # Extract JSON array
+                if '[' in ai_response and ']' in ai_response:
+                    json_start = ai_response.find('[')
+                    json_end = ai_response.rfind(']') + 1
+                    json_str = ai_response[json_start:json_end]
+                    stock_list = json.loads(json_str)
+
+                    # Validate stocks
+                    valid_stocks = [s for s in stock_list if s in self.stock_universe]
+
+                    if len(valid_stocks) >= 5:
+                        return valid_stocks[:limit]
+
+        except Exception as e:
+            print(f"⚠️  Error getting AI stock recommendations: {e}")
+
+        # Fallback to default list
+        return [
+                   'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK',
+                   'GOTO.JK', 'BBNI.JK', 'AMMN.JK', 'UNVR.JK', 'BRIS.JK',
+                   'BUMI.JK', 'ADRO.JK', 'ANTM.JK', 'EXCL.JK', 'MEDC.JK'
+               ][:limit]
+
+    def select_stocks(self, limit: int = 15) -> Dict:
+        """Main method to select stocks dynamically"""
+        print("\n" + "=" * 80)
+        print("🤖 AI-POWERED DYNAMIC STOCK SELECTION")
+        print("=" * 80)
+
+        # Step 1: Get market sentiment
+        print("📊 Analyzing market sentiment...", end=" ")
+        sentiment = self.get_market_sentiment()
+        print("✓")
+
+        print(f"\n   Sentiment: {sentiment['SENTIMENT']}")
+        print(f"   Hot Sectors: {sentiment['HOT_SECTORS']}")
+        print(f"   Reasoning: {sentiment['REASONING']}")
+
+        # Step 2: Get AI stock recommendations
+        print(f"\n🎯 Selecting top {limit} stocks...", end=" ")
+        recommended_stocks = self.get_ai_stock_recommendations(sentiment, limit)
+        print("✓")
+
+        print(f"\n✅ Selected {len(recommended_stocks)} stocks for today:")
+        for i, stock in enumerate(recommended_stocks, 1):
+            print(f"   {i}. {stock}")
+
+        return {
+            'stocks': recommended_stocks,
+            'sentiment': sentiment,
+            'timestamp': datetime.now()
+        }
+
+
 class AIAnalyzer:
     """Multi-provider AI Analyzer for trading insights"""
 
@@ -47,7 +258,7 @@ class AIAnalyzer:
             },
             'groq': {
                 'url': 'https://api.groq.com/openai/v1/chat/completions',
-                'model': 'llama-3.3-70b-versatile',  # Free tier available
+                'model': 'llama-3.3-70b-versatile',
                 'requires_key': True
             },
             'gemini': {
@@ -57,7 +268,7 @@ class AIAnalyzer:
             },
             'ollama': {
                 'url': 'http://localhost:11434/api/chat',
-                'model': 'llama3.2',  # Local, completely free
+                'model': 'llama3.2',
                 'requires_key': False
             }
         }
@@ -89,8 +300,7 @@ class AIAnalyzer:
         if api_key and config['requires_key']:
             print(f"   API Key: {api_key[:10]}...{api_key[-4:]}")
 
-        # Test connection
-        if self.provider != 'ollama':  # Skip test for local ollama
+        if self.provider != 'ollama':
             self._test_connection()
 
     def _test_connection(self):
@@ -144,7 +354,6 @@ class AIAnalyzer:
         try:
             prompt = self._create_analysis_prompt(stock_data)
 
-            # Prepare payload based on provider
             if self.provider == 'gemini':
                 payload = {
                     "contents": [{
@@ -172,7 +381,7 @@ class AIAnalyzer:
                     ],
                     "stream": False
                 }
-            else:  # deepseek, groq, openai-compatible
+            else:
                 payload = {
                     "model": self.model,
                     "messages": [
@@ -199,7 +408,6 @@ class AIAnalyzer:
             if response.status_code == 200:
                 result = response.json()
 
-                # Extract response based on provider
                 if self.provider == 'gemini':
                     ai_response = result['candidates'][0]['content']['parts'][0]['text']
                 elif self.provider == 'ollama':
@@ -261,14 +469,12 @@ Format as JSON."""
     def _parse_ai_response(self, ai_response: str, stock_data: Dict) -> Dict:
         """Parse AI response and extract insights"""
         try:
-            # Try to parse as JSON first
             if '{' in ai_response and '}' in ai_response:
                 json_start = ai_response.find('{')
                 json_end = ai_response.rfind('}') + 1
                 json_str = ai_response[json_start:json_end]
                 ai_data = json.loads(json_str)
             else:
-                # Fallback: parse text response
                 ai_data = self._parse_text_response(ai_response)
 
             return {
@@ -297,19 +503,16 @@ Format as JSON."""
         """Parse non-JSON text response"""
         data = {}
 
-        # Extract recommendation
         for rec in ['BUY', 'SELL', 'HOLD', 'WAIT']:
             if rec in text.upper():
                 data['RECOMMENDATION'] = rec
                 break
 
-        # Extract confidence (look for percentages or scores)
         import re
         confidence_match = re.search(r'(\d{1,3})%|\bconfidence[:\s]+(\d{1,3})', text, re.IGNORECASE)
         if confidence_match:
             data['CONFIDENCE'] = confidence_match.group(1) or confidence_match.group(2)
 
-        # Extract insights (first few sentences)
         sentences = text.split('.')[:3]
         data['KEY_INSIGHT'] = '.'.join(sentences).strip()
 
@@ -348,7 +551,6 @@ Format as JSON."""
             else:
                 print("⚠️")
 
-            # Rate limiting
             time.sleep(1 if self.provider == 'ollama' else 2)
 
         print("✅ AI analysis complete!\n")
@@ -449,7 +651,6 @@ class TelegramNotifier:
 • Confidence: <b>{stock['confidence']}%</b> ({stock['conf_level']})
 """
 
-        # Add AI insights if available
         if stock.get('ai_analysis_success'):
             message += f"""
 <b>🤖 AI INSIGHTS</b>
@@ -470,8 +671,8 @@ class TelegramNotifier:
 
         return message
 
-    def format_summary_message(self, results: List[Dict], phase: str, capital: float) -> str:
-        """Format summary message"""
+    def format_summary_message(self, results: List[Dict], phase: str, capital: float, sentiment: Dict = None) -> str:
+        """Format summary message with market sentiment"""
         buy_stocks = [r for r in results if 'BUY' in r['action']]
         sell_stocks = [r for r in results if 'SELL' in r['action'] or 'PROFIT' in r['action']]
 
@@ -490,8 +691,18 @@ class TelegramNotifier:
 ⏰ <b>Time:</b> {datetime.now().strftime('%d/%m/%Y %H:%M:%S')} WIB
 📍 <b>Phase:</b> {phase.replace('_', ' ')}
 💰 <b>Capital:</b> Rp {capital:,.0f}
-🤖 <b>AI-Powered Analysis</b>
+🤖 <b>AI-Powered Dynamic Selection</b>
+"""
 
+        if sentiment:
+            sentiment_emoji = {'BULLISH': '📈', 'BEARISH': '📉', 'NEUTRAL': '➡️'}
+            message += f"""
+<b>📊 MARKET SENTIMENT</b>
+• Mood: {sentiment_emoji.get(sentiment['SENTIMENT'], '📊')} {sentiment['SENTIMENT']}
+• Hot Sectors: {sentiment['HOT_SECTORS']}
+"""
+
+        message += f"""
 <b>📊 SCAN RESULTS</b>
 • Total stocks: {len(results)}
 • Buy signals: {len(buy_stocks)}
@@ -515,9 +726,10 @@ class TelegramNotifier:
 
 
 class IntradayTradingBot:
-    """Intraday Trading Bot with DeepSeek AI Integration"""
+    """Intraday Trading Bot with AI-Powered Dynamic Stock Selection"""
 
-    STOCK_LIST = [
+    # Default fallback list (used if AI fails)
+    DEFAULT_STOCK_LIST = [
         'BBCA.JK', 'BBRI.JK', 'BMRI.JK', 'TLKM.JK', 'ASII.JK',
         'GOTO.JK', 'BBNI.JK', 'AMMN.JK', 'UNVR.JK', 'BRIS.JK', 'BUMI.JK',
     ]
@@ -532,32 +744,43 @@ class IntradayTradingBot:
     MIN_VOLUME = 5_000_000
 
     def __init__(self, stocks=None, capital=10000000, telegram_bot_token=None,
-                 telegram_chat_id=None, ai_provider="deepseek", ai_api_key=None):
-        """Initialize bot with AI integration"""
-        self.stocks = stocks if stocks else self.STOCK_LIST
+                 telegram_chat_id=None, ai_provider="deepseek", ai_api_key=None,
+                 use_dynamic_selection=True):
+        """Initialize bot with AI integration and dynamic stock selection"""
         self.capital = capital
         self.results = []
         self.current_time = datetime.now().time()
+        self.use_dynamic_selection = use_dynamic_selection
+        self.market_sentiment = None
 
-        # Setup AI Analyzer (supports multiple providers)
+        # Setup AI Analyzer
         self.ai_analyzer = None
         if ai_api_key or ai_provider == 'ollama':
             try:
                 self.ai_analyzer = AIAnalyzer(provider=ai_provider, api_key=ai_api_key)
                 print(f"✅ {ai_provider.upper()} AI enabled")
+
+                # Initialize AI Stock Selector
+                if use_dynamic_selection:
+                    self.ai_stock_selector = AIStockSelector(self.ai_analyzer)
+                    selection_result = self.ai_stock_selector.select_stocks(limit=15)
+                    self.stocks = selection_result['stocks']
+                    self.market_sentiment = selection_result['sentiment']
+                else:
+                    self.stocks = stocks if stocks else self.DEFAULT_STOCK_LIST
+
             except Exception as e:
                 print(f"⚠️  AI disabled: {e}")
+                self.stocks = stocks if stocks else self.DEFAULT_STOCK_LIST
         else:
             print("⚠️  AI disabled (no API key)")
+            self.stocks = stocks if stocks else self.DEFAULT_STOCK_LIST
 
         # Setup Telegram
         self.telegram = None
         if telegram_bot_token:
-            TELEGRAM_CHAT_IDS = [
-                "1731964139",
-                "-5042882073",
-            ]
-            self.telegram = TelegramNotifier(telegram_bot_token, TELEGRAM_CHAT_IDS)
+            telegram_chat_ids = telegram_chat_id if isinstance(telegram_chat_id, list) else [telegram_chat_id]
+            self.telegram = TelegramNotifier(telegram_bot_token, telegram_chat_ids)
         else:
             print("⚠️  Telegram notifications disabled")
 
@@ -886,13 +1109,19 @@ class IntradayTradingBot:
         phase = self.get_trading_phase()
 
         print("=" * 80)
-        print("🤖 INTRADAY TRADING BOT - AI-POWERED ANALYSIS")
+        print("🤖 INTRADAY TRADING BOT - AI-POWERED DYNAMIC SELECTION")
         print("=" * 80)
         print(f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} WIB")
         print(f"Trading Phase: {phase}")
         print(f"Capital: Rp {self.capital:,.0f}")
         print(f"AI Status: {'✅ Enabled' if self.ai_analyzer else '⚠️ Disabled'}")
-        print(f"Scanning {len(self.stocks)} stocks...\n")
+        print(f"Dynamic Selection: {'✅ Enabled' if self.use_dynamic_selection else '⚠️ Disabled'}")
+
+        if self.market_sentiment:
+            print(f"\n📊 Market Sentiment: {self.market_sentiment['SENTIMENT']}")
+            print(f"🔥 Hot Sectors: {self.market_sentiment['HOT_SECTORS']}")
+
+        print(f"\nScanning {len(self.stocks)} AI-selected stocks...\n")
 
         self.results = []
 
@@ -937,8 +1166,13 @@ class IntradayTradingBot:
 
         print("\n📱 Sending Telegram notifications...")
 
-        # 1. Send summary
-        summary = self.telegram.format_summary_message(self.results, phase, self.capital)
+        # 1. Send summary with market sentiment
+        summary = self.telegram.format_summary_message(
+            self.results,
+            phase,
+            self.capital,
+            self.market_sentiment
+        )
         if self.telegram.send_message(summary):
             print("✅ Summary sent")
         else:
@@ -946,10 +1180,9 @@ class IntradayTradingBot:
 
         time.sleep(1)
 
-        # 2. Send individual stock messages (prioritize AI-analyzed stocks)
+        # 2. Send individual stock messages
         actionable_stocks = [r for r in self.results if r['action'] not in ['SKIP', 'NEUTRAL']]
 
-        # Sort by AI confidence if available, otherwise use regular confidence
         sorted_stocks = sorted(
             actionable_stocks,
             key=lambda x: x.get('ai_confidence', x['confidence']),
@@ -1059,8 +1292,8 @@ class IntradayTradingBot:
         )
         return sorted_picks[:limit]
 
-    def export_watchlist(self, filename='intraday_watchlist_ai.csv'):
-        """Export AI-powered watchlist"""
+    def export_watchlist(self, filename='intraday_watchlist_ai_dynamic.csv'):
+        """Export AI-powered dynamic watchlist"""
         if not self.results:
             print("No results to export.")
             return
@@ -1097,13 +1330,13 @@ class IntradayTradingBot:
 
         df = pd.DataFrame(data)
         df.to_csv(filename, index=False)
-        print(f"✅ AI-powered watchlist exported to {filename}")
+        print(f"✅ AI-powered dynamic watchlist exported to {filename}")
 
 
 # Main execution
 if __name__ == "__main__":
-    print("🚀 Starting AI-Powered Intraday Trading Bot...")
-    print("🤖 Powered by DeepSeek AI\n")
+    print("🚀 Starting AI-Powered Dynamic Intraday Trading Bot...")
+    print("🤖 Powered by AI - Dynamic Stock Selection\n")
 
     # ============================================
     # CONFIGURATION - EDIT THIS SECTION
@@ -1115,17 +1348,17 @@ if __name__ == "__main__":
     # 2. AI Configuration - Choose your provider
     # Options: 'deepseek', 'groq', 'gemini', 'ollama'
 
-    AI_PROVIDER = os.getenv("AI_PROVIDER", "groq")  # Default to Groq (has free tier)
+    AI_PROVIDER = os.getenv("AI_PROVIDER", "groq")
 
     # Get API key based on provider
     if AI_PROVIDER == "deepseek":
         AI_API_KEY = os.getenv("DEEPSEEK_API_KEY")
     elif AI_PROVIDER == "groq":
-        AI_API_KEY = os.getenv("GROQ_API_KEY")  # Get from https://console.groq.com
+        AI_API_KEY = os.getenv("GROQ_API_KEY")
     elif AI_PROVIDER == "gemini":
-        AI_API_KEY = os.getenv("GEMINI_API_KEY")  # Get from https://makersuite.google.com
+        AI_API_KEY = os.getenv("GEMINI_API_KEY")
     elif AI_PROVIDER == "ollama":
-        AI_API_KEY = None  # Ollama runs locally, no API key needed
+        AI_API_KEY = None
     else:
         AI_API_KEY = None
 
@@ -1138,26 +1371,23 @@ if __name__ == "__main__":
         print(f"⚠️  {AI_PROVIDER.upper()} API Key not found")
         print(f"   Add to .env: {AI_PROVIDER.upper()}_API_KEY=your_key")
 
-    # Set to None to disable AI analysis
-    # AI_API_KEY = None
-
     # 3. Telegram Configuration
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     TELEGRAM_CHAT_IDS = [c.strip() for c in os.getenv("TELEGRAM_CHAT_IDS", "").split(",") if c.strip()]
 
-    # 4. Auto-run Configuration
-    AUTO_RUN = True  # Set False to run once only
-    RUN_INTERVAL_MINUTES = 30  # Scan every 30 minutes
+    # 4. Dynamic Stock Selection
+    USE_DYNAMIC_SELECTION = True  # Set False to use static list
 
     # ============================================
 
-    # Initialize AI-powered bot
+    # Initialize AI-powered bot with dynamic selection
     bot = IntradayTradingBot(
         capital=TRADING_CAPITAL,
         telegram_bot_token=TELEGRAM_BOT_TOKEN,
         telegram_chat_id=TELEGRAM_CHAT_IDS,
         ai_provider=AI_PROVIDER,
-        ai_api_key=AI_API_KEY
+        ai_api_key=AI_API_KEY,
+        use_dynamic_selection=USE_DYNAMIC_SELECTION
     )
 
     # Check trading phase
@@ -1177,7 +1407,7 @@ if __name__ == "__main__":
 
     # Show top AI picks
     print("\n" + "=" * 80)
-    print("🏆 TOP AI-POWERED INTRADAY PICKS")
+    print("🏆 TOP AI-POWERED DYNAMIC INTRADAY PICKS")
     print("=" * 80)
 
     top_picks = bot.get_top_intraday_picks(3)
@@ -1207,16 +1437,17 @@ if __name__ == "__main__":
     bot.send_telegram_notifications(top_n=5)
 
     print("\n" + "=" * 80)
-    print("📋 AI-POWERED INTRADAY TRADING RULES")
+    print("📋 AI-POWERED DYNAMIC TRADING RULES")
     print("=" * 80)
-    print("✓ AI analyzes top 5 stocks for deeper insights")
-    print("✓ Combines technical indicators + AI recommendations")
+    print("✓ AI analyzes market sentiment DAILY")
+    print("✓ Dynamic stock selection based on hot sectors")
+    print("✓ 15 stocks selected from 35+ stock universe")
+    print("✓ AI deep analysis on top 5 stocks")
     print("✓ Best entry: 09:00 - 10:30 WIB")
     print("✓ Best exit: 14:30 - 16:00 WIB")
     print("✓ Always use stop loss (max 1% loss)")
     print("✓ Target: 1.5-2.5% profit per trade")
     print("✓ Don't hold overnight!")
-    print("✓ Follow AI risk warnings")
     print("✓ MINIMUM VOLUME: 5M shares/day")
     print("=" * 80)
 
@@ -1226,32 +1457,4 @@ if __name__ == "__main__":
     print("Day trading is risky. Trade responsibly.")
     print("=" * 80)
 
-    print("\n📱 SETUP GUIDE")
-    print("=" * 80)
-    print("1. DeepSeek AI API:")
-    print("   - Visit: https://platform.deepseek.com")
-    print("   - Create account and get API key")
-    print("   - Add to .env: DEEPSEEK_API_KEY=your_key")
-    print()
-    print("2. Telegram Bot:")
-    print("   - Chat with @BotFather, create bot")
-    print("   - Get Bot Token")
-    print("   - Chat with @userinfobot for Chat ID")
-    print("   - Add to .env: TELEGRAM_BOT_TOKEN=your_token")
-    print("   - Add to .env: TELEGRAM_CHAT_IDS=chat_id1,chat_id2")
-    print()
-    print("3. Environment Variables (.env file):")
-    print("   DEEPSEEK_API_KEY=sk-...")
-    print("   TELEGRAM_BOT_TOKEN=123456:ABC...")
-    print("   TELEGRAM_CHAT_IDS=1234567890,-1001234567890")
-    print("=" * 80)
-
-    print("\n🎯 FEATURES:")
-    print("✅ Real-time stock scanning")
-    print("✅ Technical indicator analysis")
-    print("✅ DeepSeek AI insights & recommendations")
-    print("✅ Risk factor analysis")
-    print("✅ Automated Telegram notifications")
-    print("✅ Multi-chat support")
-    print("✅ AI-powered trade plans")
-    print("=" * 80)
+    print("\n🎯 NEW FEATURES:")
